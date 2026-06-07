@@ -1,77 +1,68 @@
-import cloudscraper
+import requests
+from bs4 import BeautifulSoup
 import json
 import os
-import time
 from datetime import datetime
 
-class SALottoScraper:
-    def __init__(self):
-        # Proteção contra Cloudflare e identificação de Browser Real
-        self.scraper = cloudscraper.create_scraper(
-            browser={
-                'browser': 'chrome',
-                'platform': 'windows',
-                'desktop': True
-            }
-        )
-        self.base_url = "https://www.nationallottery.co.za/index.php?option=com_weaver&controller=lotto-history"
-        self.data_dir = "data"
-        
-        # Garante que a pasta existe para o Git
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
+def scrape_lotto_max():
+    # URL de um agregador estável de resultados canadenses
+    url = "https://www.lottonumbers.com/lotto-max-results"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    
+    soup = BeautifulSoup(response.text, 'html.parser')
+    results = []
+    
+    # O site costuma usar uma tabela para os resultados
+    table = soup.find('table', class_='lotteryTable')
+    if not table:
+        return results
 
-    def fetch_data(self, game_name):
-        """Faz o POST simulando o AJAX do site oficial"""
-        payload = {
-            'gameName': game_name,
-            'drawNumber': '', # Pega todo o histórico disponível
-            'isAjax': 'true'
-        }
-        
-        headers = {
-            'X-Requested-With': 'XMLHttpRequest',
-            'Referer': f'https://www.nationallottery.co.za/results/{game_name.lower().replace(" ", "-")}'
-        }
-
-        try:
-            print(f"[*] Varrendo: {game_name}...")
-            response = self.scraper.post(self.base_url, data=payload, headers=headers, timeout=30)
+    rows = table.find('tbody').find_all('tr')
+    
+    # Pega os 10 resultados mais recentes
+    for row in rows[:10]: 
+        cols = row.find_all('td')
+        if len(cols) < 2:
+            continue
             
-            if response.status_code == 200:
-                content = response.json()
-                if content.get('status') == 'success':
-                    return content['data']['drawDetails']
-            else:
-                print(f"[!] Erro HTTP {response.status_code} em {game_name}")
-        except Exception as e:
-            print(f"[!] Erro ao processar {game_name}: {str(e)}")
-        return None
-
-    def save_data(self, name, data):
-        """Salva o JSON formatado para consumo do App Flutter"""
-        filename = f"{self.data_dir}/{name.lower().replace(' ', '_')}.json"
+        date_text = cols[0].text.strip()
         
-        output = {
-            "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "game": name,
-            "results": data
-        }
+        # Extrair as bolas normais (ignorando o bônus)
+        balls = cols[1].find_all('li', class_='ball')
+        numbers = [int(ball.text.strip()) for ball in balls if 'bonus-ball' not in ball.get('class', [])]
         
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(output, f, ensure_ascii=False, indent=4)
-        print(f"[OK] {filename} atualizado.")
-
-    def run(self):
-        # Lista filtrada apenas com as de números (Removido Sportstake)
-        loterias = ["LOTTO", "POWERBALL", "DAILY LOTTO"]
+        # Extrair a bola bônus
+        bonus_ball = cols[1].find('li', class_='bonus-ball')
+        bonus = int(bonus_ball.text.strip()) if bonus_ball else None
         
-        for lotto in loterias:
-            result = self.fetch_data(lotto)
-            if result:
-                self.save_data(lotto, result)
-            time.sleep(5) # Delay de segurança para não ser bloqueado
+        results.append({
+            "draw_date": date_text,
+            "numbers": numbers,
+            "bonus": bonus
+        })
+        
+    return results
 
 if __name__ == "__main__":
-    bot = SALottoScraper()
-    bot.run()
+    print("Iniciando extração...")
+    
+    # Você pode adicionar outras loterias (6/49, Daily Grand) aqui
+    data = {
+        "last_updated": datetime.utcnow().isoformat() + "Z",
+        "lotto_max": scrape_lotto_max()
+    }
+    
+    # Criar pasta data se não existir
+    os.makedirs('data', exist_ok=True)
+    
+    # Salvar o arquivo
+    file_path = 'data/resultados.json'
+    with open(file_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    
+    print(f"Scraping concluído! Salvo em {file_path}")
