@@ -4,65 +4,98 @@ import json
 import os
 from datetime import datetime
 
-def scrape_lotto_max():
-    # URL de um agregador estável de resultados canadenses
-    url = "https://www.lottonumbers.com/lotto-max-results"
+def scrape_wclc_lotto_max():
+    """
+    Tenta extrair do site da Western Canada Lottery Corporation.
+    Eles costumam ter menos proteções anti-bot do que agregadores globais.
+    """
+    url = "https://www.wclc.com/home.htm"
+    
+    # Headers mais completos para simular um navegador real e enganar proteções básicas
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
     }
     
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    
-    soup = BeautifulSoup(response.text, 'html.parser')
-    results = []
-    
-    # O site costuma usar uma tabela para os resultados
-    table = soup.find('table', class_='lotteryTable')
-    if not table:
-        return results
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # O HTML do WCLC tem uma div específica para os números do Lotto Max
+        # Vamos procurar pelo bloco que contém o Lotto Max
+        lotto_max_block = soup.find(string=lambda text: text and "LOTTO MAX Winning Numbers" in text)
+        
+        if not lotto_max_block:
+            print("Não foi possível encontrar a seção do Lotto Max na página.")
+            return []
 
-    rows = table.find('tbody').find_all('tr')
-    
-    # Pega os 10 resultados mais recentes
-    for row in rows[:10]: 
-        cols = row.find_all('td')
-        if len(cols) < 2:
-            continue
-            
-        date_text = cols[0].text.strip()
+        # Pega a ul (lista) logo após o título do Lotto Max
+        numbers_list = lotto_max_block.find_next('ul')
+        list_items = numbers_list.find_all('li')
         
-        # Extrair as bolas normais (ignorando o bônus)
-        balls = cols[1].find_all('li', class_='ball')
-        numbers = [int(ball.text.strip()) for ball in balls if 'bonus-ball' not in ball.get('class', [])]
+        numbers = []
+        bonus = None
         
-        # Extrair a bola bônus
-        bonus_ball = cols[1].find('li', class_='bonus-ball')
-        bonus = int(bonus_ball.text.strip()) if bonus_ball else None
-        
-        results.append({
-            "draw_date": date_text,
+        for item in list_items:
+            text = item.text.strip()
+            # Verifica se é a bola bônus (Geralmente está escrita como "Bonus26" ou "Bonus 26")
+            if 'Bonus' in text or 'bonus' in text.lower():
+                bonus = int(''.join(filter(str.isdigit, text)))
+            else:
+                numbers.append(int(''.join(filter(str.isdigit, text))))
+                
+        # Como esse site mostra apenas o último sorteio na home, retornamos uma lista com 1 item
+        return [{
+            "draw_date": datetime.utcnow().strftime("%Y-%m-%d"), # Data do scraping
             "numbers": numbers,
             "bonus": bonus
-        })
+        }]
         
-    return results
+    except Exception as e:
+        print(f"Erro ao acessar WCLC: {e}")
+        return []
 
 if __name__ == "__main__":
-    print("Iniciando extração...")
+    print("Iniciando extração do Lotto Max...")
     
-    # Você pode adicionar outras loterias (6/49, Daily Grand) aqui
+    # Fazemos a extração
+    lotto_max_results = scrape_wclc_lotto_max()
+    
+    # Montamos a estrutura do JSON
     data = {
         "last_updated": datetime.utcnow().isoformat() + "Z",
-        "lotto_max": scrape_lotto_max()
+        "lotto_max": lotto_max_results
     }
     
     # Criar pasta data se não existir
     os.makedirs('data', exist_ok=True)
     
-    # Salvar o arquivo
+    # Salvar o arquivo apenas se houver resultados para evitar sobrescrever com arquivo vazio
     file_path = 'data/resultados.json'
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
     
-    print(f"Scraping concluído! Salvo em {file_path}")
+    if lotto_max_results:
+        # Verifica se o arquivo já existe para não perder histórico (opcional, mas recomendado)
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                try:
+                    old_data = json.load(f)
+                    # Verifica se o resultado já existe no histórico
+                    if old_data.get("lotto_max") and lotto_max_results[0] not in old_data["lotto_max"]:
+                        # Adiciona o novo resultado ao topo da lista histórica
+                        old_data["lotto_max"].insert(0, lotto_max_results[0])
+                        data["lotto_max"] = old_data["lotto_max"]
+                    else:
+                        data["lotto_max"] = old_data.get("lotto_max", lotto_max_results)
+                except json.JSONDecodeError:
+                    pass
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+        print(f"Scraping concluído com sucesso! Salvo em {file_path}")
+    else:
+        print("Scraping falhou. O arquivo JSON não foi atualizado.")
